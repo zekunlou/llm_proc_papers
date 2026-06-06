@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Convert an academic PDF to markdown with extracted figures.
 
-Two-pass LLM processing per page:
+Two-pass LLM processing per page (both passes run concurrently):
   Pass 1: extract text as single-column markdown (citations escaped as \[x\])
   Pass 2: detect figures as bounding boxes (0-999 normalized coords), crop and save
 
-Output: {output}/{citekey}.md + {output}/assets/{sub_label}.png files
+Pages are also processed concurrently up to --concurrency slots.
+
+Output: {output}/{md}.md + {output}/{assets}/{sub_label}.png files
 """
 
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -18,14 +21,23 @@ from io import BytesIO
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 from PIL import Image
+
+FIGURE_RULES = """\
+A figure IS: a plot, graph, chart, schematic diagram, simulation result, microscopy image, or scientific illustration that conveys data or a scientific concept. It must occupy meaningful 2D area — roughly square or wider-than-tall with substantial height.
+
+A figure is NOT: plain text, section headers, author affiliations, abstract text, inline or display equations, formula blocks, tables, logos, journal stamps, arXiv identifiers, page numbers, or any decorative/layout element. Do NOT mark thin horizontal bands (these are usually equations), do NOT mark the entire page, do NOT mark any region that is mostly text or symbols.\
+"""
 
 PROMPT_TEXT_TEMPLATE = """\
 Convert this academic paper page to markdown. Follow these rules exactly:
 - Output single column only. If the page has two columns, process the left column first, then the right column, maintaining reading order.
 - Escape all citation brackets with a backslash: write \\[1\\] instead of [1], \\[Smith, 2023\\] instead of [Smith, 2023].
-- For each figure, diagram, chart, or non-text visual element: insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png), where sub_label is a short descriptive name in lowercase with underscores (e.g. figure_1, band_structure_plot). Place the figure caption immediately after the placeholder.
+- For each figure, insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png). Place the figure caption immediately after the placeholder. If it is a numbered figure, use sub_label to indicate the figure number only (e.g. figure_1, figure_2). If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram). Use the same definition of "figure" as below:
+
+{figure_rules}
+
 - Tables should be rendered as markdown tables.
 - Math should be rendered as LaTeX inline ($...$) or block ($$...$$).
 - Output markdown only. No preamble, no explanation, no commentary.\
@@ -34,25 +46,36 @@ Convert this academic paper page to markdown. Follow these rules exactly:
 PROMPT_BBOX = """\
 This is a page from an academic paper. Mark only data-bearing scientific figures using bounding boxes.
 
-A figure IS: a plot, graph, chart, schematic diagram, simulation result, microscopy image, or scientific illustration that conveys data or a scientific concept. It must occupy meaningful 2D area — roughly square or wider-than-tall with substantial height.
-
-A figure is NOT: plain text, section headers, author affiliations, abstract text, inline or display equations, formula blocks, tables, logos, journal stamps, arXiv identifiers, page numbers, or any decorative/layout element. Do NOT mark thin horizontal bands (these are usually equations), do NOT mark the entire page, do NOT mark any region that is mostly text or symbols.
+{figure_rules}
 
 Output a raw JSON array. Do not wrap it in markdown code fences (no ```). No explanation before or after:
 [
-  {"bbox_2d": [x1, y1, x2, y2], "label": "figure", "sub_label": "figure_1"},
+  {{"bbox_2d": [x1, y1, x2, y2], "label": "figure", "sub_label": "figure_1"}},
   ...
 ]
 
 Rules:
 - Coordinates are on a 0–999 scale relative to the image dimensions.
 - Each box must be tight around the figure content only (not surrounding whitespace or captions).
-- A valid figure box must have both width and height greater than 10% of the page dimension (i.e. at least 100 in the 0–999 scale on each axis). Don't be too tight, it is fine to include some surrounding whitespace, but it is important to include the entire figure content.
-- label must be "figure".
+- A valid figure box must have both width and height greater than 10% of the page dimension (i.e. at least 100 in the 0–999 scale on each axis). Don't be too tight, it is fine to include some surrounding whitespace, but it is important to include the entire figure content and the sublabels like (a) (b) around the figure.
+- label must be "figure". If it is a numbered figure, please only use sub_label to indicate the figure number (e.g. figure_1, figure_2) without any additional text. If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram).
 - sub_label: lowercase, underscores, descriptive (e.g. figure_1, band_structure, phase_diagram_a). Use the same sub_label you would assign in a text extraction pass for this page.
 - If there are subfigures but are neighboring, just group them into one box with a single sub_label (e.g. figure_2) rather than trying to label them separately (e.g. figure_2a, figure_2b).
 - If no scientific figures are present on this page, output exactly: []\
 """
+
+# Module-level state set once in main() before any async work
+_log_file = None
+_verbose = False
+
+
+def log(msg: str, verbose_only: bool = False) -> None:
+    if verbose_only and not _verbose:
+        return
+    print(msg, file=sys.stderr)
+    if _log_file:
+        _log_file.write(msg + "\n")
+        _log_file.flush()
 
 
 def load_env():
@@ -79,37 +102,55 @@ def image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def call_llm(client, model, b64_image, prompt, min_pixels, max_pixels):
-    """Send one image+prompt to the LLM and return the response text."""
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
+async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, max_pixels):
+    """Send one image+prompt to the LLM and return the response text. Retries on 429."""
+    from openai import RateLimitError
+    retry_wait = 60
+    while True:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
                     {
-                        "type": "image_url",
-                        "min_pixels": min_pixels,
-                        "max_pixels": max_pixels,
-                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
-                    },
-                    {"type": "text", "text": prompt},
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "min_pixels": min_pixels,
+                                "max_pixels": max_pixels,
+                                "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
                 ],
-            }
-        ],
-        max_tokens=20000,
-    )
-    return response.choices[0].message.content or ""
+                max_tokens=20000,
+            )
+            return response.choices[0].message.content or ""
+        except RateLimitError as e:
+            headers = getattr(getattr(e, "response", None), "headers", {})
+            limit_min  = headers.get("x-ratelimit-limit-minute", "?")
+            remain_min = headers.get("x-ratelimit-remaining-minute", "?")
+            limit_hr   = headers.get("x-ratelimit-limit-hour", "?")
+            remain_hr  = headers.get("x-ratelimit-remaining-hour", "?")
+            limit_day  = headers.get("x-ratelimit-limit-day", "?")
+            remain_day = headers.get("x-ratelimit-remaining-day", "?")
+            reset_sec  = headers.get("ratelimit-reset", None)
+            wait = (int(reset_sec) + 5) if reset_sec is not None else retry_wait
+            log(
+                f"Rate limit hit — minute: {remain_min}/{limit_min}, "
+                f"hour: {remain_hr}/{limit_hr}, day: {remain_day}/{limit_day}, "
+                f"reset in {reset_sec if reset_sec is not None else '?'}s — waiting {wait}s before retry..."
+            )
+            await asyncio.sleep(wait)
 
 
 def parse_bbox_response(text):
     """Extract the JSON array of bboxes from LLM response."""
-    # Strip markdown fences if present
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
     text = text.strip()
 
-    # Find the JSON array
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if not match:
         return []
@@ -132,47 +173,52 @@ def denormalize_bbox(coords, img_width, img_height):
     )
 
 
-def process_page(client, model, img, min_pixels, max_pixels, assets_dir, page_num, assets_name="assets", verbose=False):
-    """Run two-pass OCR on one page image. Returns markdown string for the page."""
+async def process_page(
+    client: AsyncOpenAI,
+    model,
+    img: Image.Image,
+    min_pixels,
+    max_pixels,
+    assets_dir: Path,
+    page_num: int,
+    assets_name: str = "assets",
+):
+    """Run two-pass OCR on one page image concurrently. Returns markdown string."""
     b64 = image_to_base64(img)
     img_w, img_h = img.size
-    prompt_text = PROMPT_TEXT_TEMPLATE.format(assets=assets_name)
+    prompt_text = PROMPT_TEXT_TEMPLATE.format(assets=assets_name, figure_rules=FIGURE_RULES)
+    prompt_bbox = PROMPT_BBOX.format(figure_rules=FIGURE_RULES)
 
-    print(f"  Pass 1: text extraction...", file=sys.stderr)
-    markdown = call_llm(client, model, b64, prompt_text, min_pixels, max_pixels)
+    log(f"  Page {page_num}: passes 1+2 starting concurrently...")
+    markdown, bbox_text = await asyncio.gather(
+        call_llm(client, model, b64, prompt_text, min_pixels, max_pixels),
+        call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels),
+    )
+    log(f"  Page {page_num}: passes done.")
 
-    print(f"  Pass 2: figure detection...", file=sys.stderr)
-    bbox_text = call_llm(client, model, b64, PROMPT_BBOX, min_pixels, max_pixels)
-
-    if verbose:
-        print(f"  [verbose] raw bbox response:\n{bbox_text}", file=sys.stderr)
+    log(f"  [verbose] Page {page_num} raw bbox response:\n{bbox_text}", verbose_only=True)
 
     bboxes = parse_bbox_response(bbox_text)
 
     if bboxes:
-        print(f"  Found {len(bboxes)} figure(s), cropping...", file=sys.stderr)
+        log(f"  Page {page_num}: {len(bboxes)} figure(s), cropping...")
     for bbox in bboxes:
         coords = bbox.get("bbox_2d", [])
         sub_label = bbox.get("sub_label", f"figure_p{page_num}")
         if len(coords) != 4:
             continue
-        # Reject boxes too small on either axis (< 10% of page in normalized coords)
         if (coords[2] - coords[0]) < 100 or (coords[3] - coords[1]) < 100:
-            if verbose:
-                print(f"  [verbose] {sub_label}: skipped (too small: {coords})", file=sys.stderr)
-            continue
+            log(f"  [verbose] Page {page_num} {sub_label}: small bbox {coords}, cropping anyway", verbose_only=True)
         x1, y1, x2, y2 = denormalize_bbox(coords, img_w, img_h)
-        # Clamp to image bounds
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(img_w, x2), min(img_h, y2)
         if x2 <= x1 or y2 <= y1:
             continue
-        if verbose:
-            print(
-                f"  [verbose] {sub_label}: norm={coords} → px=({x1},{y1},{x2},{y2}) "
-                f"size={x2-x1}×{y2-y1} (image {img_w}×{img_h})",
-                file=sys.stderr,
-            )
+        log(
+            f"  [verbose] Page {page_num} {sub_label}: norm={coords} → px=({x1},{y1},{x2},{y2}) "
+            f"size={x2-x1}×{y2-y1} (image {img_w}×{img_h})",
+            verbose_only=True,
+        )
         cropped = img.crop((x1, y1, x2, y2))
         out_path = assets_dir / f"{sub_label}.png"
         cropped.save(out_path, format="PNG")
@@ -180,13 +226,13 @@ def process_page(client, model, img, min_pixels, max_pixels, assets_dir, page_nu
     return markdown
 
 
-def test_config(client, model):
+async def async_test_config(client: AsyncOpenAI, model):
     """Send a minimal text-only request to verify the endpoint/key/model."""
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "Say OK"}],
-            max_tokens=2000,  # thinking model needs budget before it can write content
+            max_tokens=2000,
         )
         msg = response.choices[0].message
         reply = (msg.content or "").strip()
@@ -198,7 +244,43 @@ def test_config(client, model):
         sys.exit(1)
 
 
+async def async_main(args, client: AsyncOpenAI, all_pages, page_indices):
+    output_dir = Path(args.output).expanduser()
+    assets_dir = output_dir / args.assets
+    output_dir.mkdir(parents=True, exist_ok=True)
+    assets_dir.mkdir(exist_ok=True)
+
+    min_pixels = args.min_tokens * 32 * 32
+    max_pixels = args.max_tokens * 32 * 32
+    total = len(all_pages)
+
+    sem = asyncio.Semaphore(args.concurrency)
+
+    async def process_guarded(idx):
+        async with sem:
+            page_num = idx + 1
+            log(f"Page {page_num}/{total} acquired slot.")
+            md = await process_page(
+                client, args.model, all_pages[idx], min_pixels, max_pixels,
+                assets_dir, page_num, assets_name=args.assets,
+            )
+            return (idx, md)
+
+    log(f"Processing {len(page_indices)} of {total} pages (concurrency={args.concurrency}).")
+    results = await asyncio.gather(*[process_guarded(i) for i in page_indices])
+    page_markdowns = [md for _, md in sorted(results)]
+
+    combined = "\n\n---\n\n".join(page_markdowns)
+    md_name = args.md if args.md.endswith(".md") else args.md + ".md"
+    out_md = output_dir / md_name
+    out_md.write_text(combined, encoding="utf-8")
+    log(f"Written: {out_md}")
+    print(str(out_md))
+
+
 def main():
+    global _log_file, _verbose
+
     load_env()
 
     parser = argparse.ArgumentParser(
@@ -229,8 +311,8 @@ def main():
     parser.add_argument(
         "--dpi",
         type=int,
-        default=150,
-        help="Resolution for PDF page rendering (default: 150).",
+        default=int(os.environ.get("LLM_OCR_DPI", 200)),
+        help="Resolution for PDF page rendering (default: $LLM_OCR_DPI or 200).",
     )
     parser.add_argument(
         "--min-tokens",
@@ -247,6 +329,12 @@ def main():
         dest="max_tokens",
         help="Maximum image tokens (default: $LLM_OCR_MAX_TOKENS or 50000). "
              "Each token covers a 32×32 px patch.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.environ.get("LLM_OCR_CONCURRENCY", 4)),
+        help="Max number of pages processed concurrently (default: $LLM_OCR_CONCURRENCY or 4).",
     )
     parser.add_argument(
         "--model",
@@ -271,6 +359,12 @@ def main():
         help="Page range to process, e.g. '1-5' or '3' (default: all).",
     )
     parser.add_argument(
+        "--log-file",
+        metavar="PATH",
+        dest="log_file",
+        help="Append status log to this file in addition to stderr.",
+    )
+    parser.add_argument(
         "--test-config",
         action="store_true",
         dest="test_config",
@@ -283,6 +377,8 @@ def main():
     )
     args = parser.parse_args()
 
+    _verbose = args.verbose
+
     if not args.endpoint:
         print("Error: --endpoint or $LLM_ENDPOINT is required.", file=sys.stderr)
         sys.exit(1)
@@ -290,11 +386,11 @@ def main():
         print("Error: --api-key or $LLM_API_KEY is required.", file=sys.stderr)
         sys.exit(1)
 
-    client = OpenAI(base_url=args.endpoint, api_key=args.api_key)
+    client = AsyncOpenAI(base_url=args.endpoint, api_key=args.api_key)
 
     if args.test_config:
-        test_config(client, args.model)
-        return  # unreachable, test_config exits
+        asyncio.run(async_test_config(client, args.model))
+        return
 
     if not args.pdf_path:
         parser.error("pdf_path is required unless --test-config is used.")
@@ -306,39 +402,20 @@ def main():
         print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
         sys.exit(1)
 
-    output_dir = Path(args.output).expanduser()
-    assets_dir = output_dir / args.assets
-    output_dir.mkdir(parents=True, exist_ok=True)
-    assets_dir.mkdir(exist_ok=True)
+    if args.log_file:
+        _log_file = open(args.log_file, "a", encoding="utf-8")
 
-    min_pixels = args.min_tokens * 32 * 32
-    max_pixels = args.max_tokens * 32 * 32
+    try:
+        log(f"Rendering PDF at {args.dpi} DPI...")
+        from pdf2image import convert_from_path
 
-    print(f"Rendering PDF at {args.dpi} DPI...", file=sys.stderr)
-    # Import here so --test-config works without pdf2image installed
-    from pdf2image import convert_from_path
+        all_pages = convert_from_path(str(pdf_path), dpi=args.dpi)
+        page_indices = parse_page_range(args.pages, len(all_pages))
 
-    all_pages = convert_from_path(str(pdf_path), dpi=args.dpi)
-    page_indices = parse_page_range(args.pages, len(all_pages))
-    print(f"Processing {len(page_indices)} of {len(all_pages)} pages.", file=sys.stderr)
-
-    page_markdowns = []
-    for idx in page_indices:
-        img = all_pages[idx]
-        page_num = idx + 1
-        print(f"Page {page_num}/{len(all_pages)}...", file=sys.stderr)
-        md = process_page(
-            client, args.model, img, min_pixels, max_pixels, assets_dir, page_num,
-            assets_name=args.assets, verbose=args.verbose,
-        )
-        page_markdowns.append(md)
-
-    combined = "\n\n---\n\n".join(page_markdowns)
-    md_name = args.md if args.md.endswith(".md") else args.md + ".md"
-    out_md = output_dir / md_name
-    out_md.write_text(combined, encoding="utf-8")
-    print(f"Written: {out_md}", file=sys.stderr)
-    print(str(out_md))
+        asyncio.run(async_main(args, client, all_pages, page_indices))
+    finally:
+        if _log_file:
+            _log_file.close()
 
 
 if __name__ == "__main__":

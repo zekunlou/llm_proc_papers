@@ -29,11 +29,13 @@ ZOTERO_LIBRARY_TYPE=user
 ZOTERO_API_KEY=<your API key>
 ZOTERO_DATA_DIR=~/Zotero
 
-LLM_ENDPOINT=https://chat-ai.academiccloud.de/v1
+LLM_ENDPOINT=https://your-api-endpoint/v1
 LLM_API_KEY=<your key>
 LLM_OCR_MODEL=qwen3.6-35b-a3b
+LLM_OCR_DPI=200
 LLM_OCR_MIN_TOKENS=10000
 LLM_OCR_MAX_TOKENS=50000
+LLM_OCR_CONCURRENCY=4
 ```
 
 ### 3. Verify OCR config
@@ -112,3 +114,5 @@ To process only specific pages:
 - Each page is separated by a `---` horizontal rule.
 - Figure placeholders in the markdown (`![figure_1](assets/figure_1.png)`) match the cropped images by `sub_label`.
 - Status messages go to stderr; stdout contains only the output path (for scripting).
+- OCR is async: within each page, text and bbox passes run concurrently; across pages, up to `--concurrency` pages run at the same time (default 4, configurable via `$LLM_OCR_CONCURRENCY`).
+- Use `--log-file ocr.log` to capture status messages to a file for long runs.

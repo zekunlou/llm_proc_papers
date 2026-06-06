@@ -2,7 +2,7 @@
 
 ## Description
 
-This project is now at stage 2. Stage 1 is complete.
+This project is now at stage 3. Stages 1–2 are complete.
 
 ## Coding Instructions
 
@@ -21,3 +21,17 @@ Implemented two scripts in `./scripts/`:
 LLM backend: Qwen3.6-35b-a3b via OpenAI-compatible endpoint (`https://saia.gwdg.de/v1`). Image tokens configured via `LLM_OCR_MIN_TOKENS`/`LLM_OCR_MAX_TOKENS` in `.env` (defaults: 10000/50000).
 
 Supporting files written: `SKILL.md` (LLM-facing reference), `README.md` (human-facing guide).
+
+### Stage 2 — Async acceleration and observability for `pdf2md.py`
+
+Rewrote `pdf2md.py` to process pages concurrently:
+
+- Switched to `AsyncOpenAI`; `call_llm` is now async.
+- **Within-page parallelism**: text and bbox passes run simultaneously via `asyncio.gather` — halves per-page latency.
+- **Across-page parallelism**: all pages dispatched concurrently under an `asyncio.Semaphore`; results sorted by index to preserve page order.
+- **Rate-limit handling**: `call_llm` catches `RateLimitError`, logs remaining quota from response headers (`x-ratelimit-remaining-minute/hour/day`), and retries after `ratelimit-reset + 5` seconds (falls back to 60 s if header absent).
+- Small bbox filter changed from hard skip to log-and-crop (warning only in `--verbose`).
+- **Shared `FIGURE_RULES`**: figure definition extracted into a single constant injected into both the text and bbox prompts, so both passes use identical criteria for what counts as a figure.
+- New `.env` vars: `LLM_OCR_CONCURRENCY` (default 4), `LLM_OCR_DPI` (default 200).
+- New CLI args: `--concurrency N`, `--log-file PATH` (appends status messages to file), `--dpi` now reads from `$LLM_OCR_DPI`.
+- Added `.env.template` for safe GitHub publishing.

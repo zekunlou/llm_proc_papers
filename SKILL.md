@@ -92,7 +92,7 @@ Final output: `{output}/{citekey}.md` (all pages concatenated with `---` separat
 ### Usage
 
 ```
-conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR --citekey KEY [options]
+conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR [options]
 ```
 
 ### Arguments
@@ -103,13 +103,15 @@ conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR --citek
 | `--output DIR` | yes* | — | Directory to write the markdown file and assets dir into. *Not needed with `--test-config`. |
 | `--md FILENAME` | no | `main_paper.md` | Markdown output filename. `.md` extension added automatically if omitted. |
 | `--assets DIRNAME` | no | `assets` | Assets subdirectory name inside `--output`. |
-| `--dpi INT` | no | `150` | PDF rendering resolution. Higher = better quality, slower. |
+| `--dpi INT` | no | `$LLM_OCR_DPI` (200) | PDF rendering resolution. Higher = better quality, slower. |
 | `--min-tokens INT` | no | `$LLM_OCR_MIN_TOKENS` (10000) | Image token floor. Each token = 32×32 px. |
 | `--max-tokens INT` | no | `$LLM_OCR_MAX_TOKENS` (50000) | Image token ceiling. Each token = 32×32 px. |
 | `--model STR` | no | `$LLM_OCR_MODEL` | Model name. |
 | `--endpoint STR` | no | `$LLM_ENDPOINT` | OpenAI-compatible base URL. |
 | `--api-key KEY` | no | `$LLM_API_KEY` | API key. |
+| `--concurrency N` | no | `$LLM_OCR_CONCURRENCY` (4) | Max pages processed concurrently. Each page also runs its two passes in parallel. |
 | `--pages RANGE` | no | all | Page range, e.g. `1-5` or `3`. |
+| `--log-file PATH` | no | — | Append all status messages to this file (in addition to stderr). Useful for tracking long runs. |
 | `--verbose` | no | — | Print raw bbox response and pixel coordinates per figure. Use to diagnose false positives. |
 | `--test-config` | no | — | Test endpoint/key/model connectivity and exit. |
 
@@ -180,5 +182,7 @@ If mismatches are found, re-run the affected pages with `--verbose` to inspect t
 | `LLM_ENDPOINT` | pdf2md | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | pdf2md | API key |
 | `LLM_OCR_MODEL` | pdf2md | Model name |
+| `LLM_OCR_DPI` | pdf2md | PDF render resolution (default 200) |
 | `LLM_OCR_MIN_TOKENS` | pdf2md | Image token floor (default 10000) |
 | `LLM_OCR_MAX_TOKENS` | pdf2md | Image token ceiling (default 50000) |
+| `LLM_OCR_CONCURRENCY` | pdf2md | Max concurrent pages (default 4) |
