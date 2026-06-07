@@ -102,7 +102,17 @@ def image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, max_pixels):
+def thinking_extra_body(model, enable_thinking):
+    """Build the extra_body dict that toggles thinking, based on the model's serving convention."""
+    name = model.lower()
+    if "qwen" in name:
+        return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+    if "mimo" in name:
+        return {"thinking": {"type": "enabled" if enable_thinking else "disabled"}}
+    return {}
+
+
+async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, max_pixels, enable_thinking=True):
     """Send one image+prompt to the LLM and return the response text. Retries on 429."""
     from openai import RateLimitError
     retry_wait = 60
@@ -125,6 +135,7 @@ async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, ma
                     }
                 ],
                 max_tokens=20000,
+                extra_body=thinking_extra_body(model, enable_thinking),
             )
             return response.choices[0].message.content or ""
         except RateLimitError as e:
@@ -191,8 +202,8 @@ async def process_page(
 
     log(f"  Page {page_num}: passes 1+2 starting concurrently...")
     markdown, bbox_text = await asyncio.gather(
-        call_llm(client, model, b64, prompt_text, min_pixels, max_pixels),
-        call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels),
+        call_llm(client, model, b64, prompt_text, min_pixels, max_pixels, enable_thinking=False),
+        call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels, enable_thinking=True),
     )
     log(f"  Page {page_num}: passes done.")
 
