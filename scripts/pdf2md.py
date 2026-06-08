@@ -50,7 +50,7 @@ PROMPT_TEXT_TEMPLATE = """\
 Convert this academic paper page to markdown. Follow these rules exactly:
 - Output single column only. If the page has two columns, process the left column first, then the right column, maintaining reading order.
 - Escape all citation brackets with a backslash: write \\[1\\] instead of [1], \\[Smith, 2023\\] instead of [Smith, 2023].
-- For each figure, insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png). Place the figure caption immediately after the placeholder. If it is a numbered figure, use sub_label to indicate the figure number only (e.g. figure_1, figure_2). If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram). Use the same definition of "figure" as below:
+- For each figure, insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png) — for example ![figure_1]({assets}/figure_1.png). Place the figure caption immediately after the placeholder. If it is a numbered figure, use sub_label to indicate the figure number only (e.g. figure_1, figure_2). If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram). Never represent a figure as an HTML comment such as `<!-- Image (x1, y1, x2, y2) -->` or any other bbox/coordinate notation — the only acceptable figure placeholder is the ![sub_label](...) markdown image syntax above. Use the same definition of "figure" as below:
 
 {figure_rules}
 
