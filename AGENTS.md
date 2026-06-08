@@ -2,7 +2,7 @@
 
 ## Description
 
-This project is now at stage 3. Stages 1–2 are complete.
+This project is now at stage 4. Stages 1–3 are complete.
 
 ## Coding Instructions
 
@@ -35,3 +35,18 @@ Rewrote `pdf2md.py` to process pages concurrently:
 - New `.env` vars: `LLM_OCR_CONCURRENCY` (default 4), `LLM_OCR_DPI` (default 200).
 - New CLI args: `--concurrency N`, `--log-file PATH` (appends status messages to file), `--dpi` now reads from `$LLM_OCR_DPI`.
 - Added `.env.template` for safe GitHub publishing.
+
+### Stage 3 — Model-aware thinking-mode control
+
+Different serving backends expose hybrid-thinking toggles via incompatible `extra_body` conventions (Qwen3/vLLM uses `chat_template_kwargs.enable_thinking`, MiMo uses `thinking.type`, plain OpenAI has no boolean toggle). Added `thinking_extra_body(model, enable_thinking)`, which inspects `model.lower()` for `"qwen"` / `"mimo"` substrings and returns the matching `extra_body` dict (empty dict for unrecognized models). `call_llm` now builds `extra_body` through this dispatcher instead of hardcoding one convention. Wired so the bbox-detection pass runs with thinking enabled and the text-extraction pass runs with thinking disabled.
+
+### Stage 4 — Bbox-first sequential passes + prompt quality rules
+
+Changed `process_page` from running both passes concurrently (`asyncio.gather`) to running them sequentially: bbox detection first, then text extraction. The detected `sub_label`/`bbox_2d` list is formatted and injected into the text prompt (`{detected_figures}` placeholder) so the text pass reuses the exact labels the bbox pass already assigned — eliminating mismatches between markdown figure references and saved asset filenames.
+
+New shared prompt constants (alongside `FIGURE_RULES`):
+- **`SUBFIGURE_RULES`**: clarifies that subfigures sharing one caption are a single figure regardless of layout, injected into both `PROMPT_BBOX` and `PROMPT_TEXT_TEMPLATE`.
+- **`LATEX_MARKDOWN_RULES`**: KaTeX/Markdown compatibility constraints (`\boldsymbol` not `\bm`, `align` instead of bare `aligned` inside `$$...$$`, no stacked notation macros).
+- **`TRANSCRIPTION_RULES`**: instructs the model to transcribe the rendered page literally rather than reconstruct LaTeX source artifacts (`\ref`, `\label`, `\cite`, `\footnote`), and to use Markdown footnote syntax (`[^n]` / `[^n]: ...`) for footnote markers.
+
+Across-page concurrency (the `asyncio.Semaphore`) is unaffected — only the within-page pass ordering changed.

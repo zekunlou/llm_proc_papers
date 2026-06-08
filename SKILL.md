@@ -83,9 +83,9 @@ conda run -n zotero_mcp python scripts/locate_pdf.py "ahmed heterodeformations" 
 
 ## `pdf2md.py` — PDF to markdown with figure extraction
 
-Two-pass LLM OCR per page:
-1. **Text pass**: extracts content as single-column markdown; citations escaped as `\[x\]` for Obsidian compatibility; figure placeholders inserted.
-2. **Bbox pass**: detects figures as bounding boxes (0–999 normalized coords), crops and saves them to `assets/`.
+Two-pass LLM OCR per page, run sequentially:
+1. **Bbox pass**: detects figures as bounding boxes (0–999 normalized coords), crops and saves them to `assets/`.
+2. **Text pass**: extracts content as single-column markdown; citations escaped as `\[x\]` for Obsidian compatibility; figure placeholders inserted using the *exact* `sub_label`s found by the bbox pass (passed into its prompt as context), so labels stay consistent between the markdown and the saved image files.
 
 Final output: `{output}/{citekey}.md` (all pages concatenated with `---` separators).
 

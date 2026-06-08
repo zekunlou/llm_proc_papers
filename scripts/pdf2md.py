@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Convert an academic PDF to markdown with extracted figures.
 
-Two-pass LLM processing per page (both passes run concurrently):
-  Pass 1: extract text as single-column markdown (citations escaped as \[x\])
-  Pass 2: detect figures as bounding boxes (0-999 normalized coords), crop and save
+Two-pass LLM processing per page (run sequentially, bbox first):
+  Pass 1: detect figures as bounding boxes (0-999 normalized coords), crop and save
+  Pass 2: extract text as single-column markdown (citations escaped as \[x\]),
+          informed by the detected figures from pass 1 so sub_labels stay consistent
 
-Pages are also processed concurrently up to --concurrency slots.
+Pages are processed concurrently up to --concurrency slots.
 
 Output: {output}/{md}.md + {output}/{assets}/{sub_label}.png files
 """
@@ -30,6 +31,21 @@ A figure IS: a plot, graph, chart, schematic diagram, simulation result, microsc
 A figure is NOT: plain text, section headers, author affiliations, abstract text, inline or display equations, formula blocks, tables, logos, journal stamps, arXiv identifiers, page numbers, or any decorative/layout element. Do NOT mark thin horizontal bands (these are usually equations), do NOT mark the entire page, do NOT mark any region that is mostly text or symbols.\
 """
 
+SUBFIGURE_RULES = """\
+Subfigures sharing one caption (e.g., labelled (a), (b) within a single "Fig. N" caption) belong to ONE figure regardless of their layout — side-by-side, stacked, or split across columns. Always assign sub_label to match the figure number used in its caption, never per-panel. If you cannot determine whether two crops share a caption, prefer merging them.\
+"""
+
+LATEX_MARKDOWN_RULES = """\
+- LaTeX/Markdown compatibility:
+  - Use \\boldsymbol{...} for bold vectors/tensors. Never use \\bm{...}.
+  - For multi-line equations, wrap in $$\\begin{align} ... \\end{align}$$. Never put \\begin{aligned}...\\end{aligned} directly inside a $$...$$ block — KaTeX requires aligned to be nested inside another display environment, which Markdown math blocks don't provide.
+  - Do not stack notation commands (e.g., \\underline{\\underline{Q}}); render each mathematical object with a single consistent macro.\
+"""
+
+TRANSCRIPTION_RULES = """\
+- Follow markdown format instead of inferring LaTeX contents: Transcribe the text exactly as it visually appears on the rendered page. Do not reconstruct, infer, or output LaTeX source artifacts such as \\ref{}, \\label{}, \\cite{}, or \\footnote{} — the page shows you the resolved, typeset result (e.g., "Figure 2", a superscript number, a bottom-of-page note); transcribe that. For footnote markers, always use Markdown footnote syntax [^n] with the definition [^n]: <note text> placed at the location the note appears on the page — never <sup>, \\footnote{}, or bare $^n$.\
+"""
+
 PROMPT_TEXT_TEMPLATE = """\
 Convert this academic paper page to markdown. Follow these rules exactly:
 - Output single column only. If the page has two columns, process the left column first, then the right column, maintaining reading order.
@@ -38,9 +54,16 @@ Convert this academic paper page to markdown. Follow these rules exactly:
 
 {figure_rules}
 
+{subfigure_rules}
+
+A separate detection pass already located the figures on this page; reuse these exact sub_labels for your placeholders — do not invent new ones, rename them, or split/merge them differently:
+{detected_figures}
+
 - Tables should be rendered as markdown tables.
 - Math should be rendered as LaTeX inline ($...$) or block ($$...$$).
-- Output markdown only. No preamble, no explanation, no commentary.\
+{latex_rules}
+{transcription_rules}
+- Output markdown only. No preamble, no explanation, no commentary, and do not wrap your output in markdown code fences (no ```).\
 """
 
 PROMPT_BBOX = """\
@@ -60,7 +83,7 @@ Rules:
 - A valid figure box must have both width and height greater than 10% of the page dimension (i.e. at least 100 in the 0–999 scale on each axis). Don't be too tight, it is fine to include some surrounding whitespace, but it is important to include the entire figure content and the sublabels like (a) (b) around the figure.
 - label must be "figure". If it is a numbered figure, please only use sub_label to indicate the figure number (e.g. figure_1, figure_2) without any additional text. If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram).
 - sub_label: lowercase, underscores, descriptive (e.g. figure_1, band_structure, phase_diagram_a). Use the same sub_label you would assign in a text extraction pass for this page.
-- If there are subfigures but are neighboring, just group them into one box with a single sub_label (e.g. figure_2) rather than trying to label them separately (e.g. figure_2a, figure_2b).
+- {subfigure_rules}
 - If no scientific figures are present on this page, output exactly: []\
 """
 
@@ -156,11 +179,16 @@ async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, ma
             await asyncio.sleep(wait)
 
 
+def strip_code_fences(text):
+    """Strip a leading/trailing ``` or ```<lang> markdown code fence, if present."""
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
+    return text.strip()
+
+
 def parse_bbox_response(text):
     """Extract the JSON array of bboxes from LLM response."""
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
-    text = text.strip()
+    text = strip_code_fences(text)
 
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if not match:
@@ -194,22 +222,40 @@ async def process_page(
     page_num: int,
     assets_name: str = "assets",
 ):
-    """Run two-pass OCR on one page image concurrently. Returns markdown string."""
+    """Run two-pass OCR on one page image, bbox detection first, then text extraction
+    informed by the detected figures (so sub_labels stay consistent). Returns markdown string."""
     b64 = image_to_base64(img)
     img_w, img_h = img.size
-    prompt_text = PROMPT_TEXT_TEMPLATE.format(assets=assets_name, figure_rules=FIGURE_RULES)
-    prompt_bbox = PROMPT_BBOX.format(figure_rules=FIGURE_RULES)
+    prompt_bbox = PROMPT_BBOX.format(figure_rules=FIGURE_RULES, subfigure_rules=SUBFIGURE_RULES)
 
-    log(f"  Page {page_num}: passes 1+2 starting concurrently...")
-    markdown, bbox_text = await asyncio.gather(
-        call_llm(client, model, b64, prompt_text, min_pixels, max_pixels, enable_thinking=False),
-        call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels, enable_thinking=True),
-    )
-    log(f"  Page {page_num}: passes done.")
+    log(f"  Page {page_num}: pass 1 (figure detection) starting...")
+    bbox_text = await call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels, enable_thinking=True)
+    log(f"  Page {page_num}: pass 1 done.")
 
     log(f"  [verbose] Page {page_num} raw bbox response:\n{bbox_text}", verbose_only=True)
 
     bboxes = parse_bbox_response(bbox_text)
+
+    if bboxes:
+        detected_figures = "\n".join(
+            f"- {b.get('sub_label', '?')}: bbox_2d={b.get('bbox_2d', [])}" for b in bboxes
+        )
+    else:
+        detected_figures = "(none detected on this page)"
+
+    prompt_text = PROMPT_TEXT_TEMPLATE.format(
+        assets=assets_name,
+        figure_rules=FIGURE_RULES,
+        subfigure_rules=SUBFIGURE_RULES,
+        detected_figures=detected_figures,
+        latex_rules=LATEX_MARKDOWN_RULES,
+        transcription_rules=TRANSCRIPTION_RULES,
+    )
+
+    log(f"  Page {page_num}: pass 2 (text extraction) starting...")
+    markdown = await call_llm(client, model, b64, prompt_text, min_pixels, max_pixels, enable_thinking=False)
+    markdown = strip_code_fences(markdown)
+    log(f"  Page {page_num}: pass 2 done.")
 
     if bboxes:
         log(f"  Page {page_num}: {len(bboxes)} figure(s), cropping...")

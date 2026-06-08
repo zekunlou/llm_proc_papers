@@ -114,5 +114,5 @@ To process only specific pages:
 - Each page is separated by a `---` horizontal rule.
 - Figure placeholders in the markdown (`![figure_1](assets/figure_1.png)`) match the cropped images by `sub_label`.
 - Status messages go to stderr; stdout contains only the output path (for scripting).
-- OCR is async: within each page, text and bbox passes run concurrently; across pages, up to `--concurrency` pages run at the same time (default 4, configurable via `$LLM_OCR_CONCURRENCY`).
+- OCR is async: within each page, the bbox pass runs first and its detected `sub_label`s are fed into the text pass prompt (so figure references stay consistent); across pages, up to `--concurrency` pages run at the same time (default 4, configurable via `$LLM_OCR_CONCURRENCY`).
 - Use `--log-file ocr.log` to capture status messages to a file for long runs.

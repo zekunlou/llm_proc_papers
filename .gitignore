@@ -1,4 +1,4 @@
 .env
 outputs
 tmp
-
+**/__pycache__/
