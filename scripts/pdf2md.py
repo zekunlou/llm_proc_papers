@@ -59,6 +59,8 @@ Convert this academic paper page to markdown. Follow these rules exactly:
 A separate detection pass already located the figures on this page; reuse these exact sub_labels for your placeholders — do not invent new ones, rename them, or split/merge them differently:
 {detected_figures}
 
+For each detected figure, treat its entire bounding region as a single opaque image. Do NOT transcribe any text that appears inside the figure region — this includes axis tick labels, axis titles, legend entries, colorbar labels, panel letters like (a) (b), and any other text or numbers embedded in the plot. All of that is part of the figure image and must not appear in the markdown output. The only representation of the figure in your output is the ![sub_label](...) placeholder followed by its caption.
+
 - Tables should be rendered as markdown tables.
 - Math should be rendered as LaTeX inline ($...$) or block ($$...$$).
 {latex_rules}
