@@ -8,6 +8,7 @@ This project is now at stage 4. Stages 1–3 are complete.
 
 - Please use conda environment `zotero_mcp` for python arguments.
     - e.g. `conda run -n zotero_mcp python my_script.py`
+- All code changes, if changing workflow or commands, should be reflected in README.md and SKILL.md.
 
 ## Previous Stages
 

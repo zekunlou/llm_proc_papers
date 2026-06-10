@@ -56,10 +56,10 @@ Convert this academic paper page to markdown. Follow these rules exactly:
 
 {subfigure_rules}
 
-A separate detection pass already located the figures on this page; reuse these exact sub_labels for your placeholders — do not invent new ones, rename them, or split/merge them differently:
+A separate detection pass already located the figures on this page. For each figure below, copy the placeholder line VERBATIM into your output at the location where the figure appears — do not alter it, do not use HTML comments, do not use coordinates:
 {detected_figures}
 
-For each detected figure, treat its entire bounding region as a single opaque image. Do NOT transcribe any text that appears inside the figure region — this includes axis tick labels, axis titles, legend entries, colorbar labels, panel letters like (a) (b), and any other text or numbers embedded in the plot. All of that is part of the figure image and must not appear in the markdown output. The only representation of the figure in your output is the ![sub_label](...) placeholder followed by its caption.
+For each detected figure, treat its entire bounding region as a single opaque image. Do NOT transcribe any text that appears inside the figure region — this includes axis tick labels, axis titles, legend entries, colorbar labels, panel letters like (a) (b), and any other text or numbers embedded in the plot. All of that is part of the figure image and must not appear in the markdown output. The only representation of the figure in your output is the verbatim placeholder line shown above, followed by its caption.
 
 - Tables should be rendered as markdown tables.
 - Math should be rendered as LaTeX inline ($...$) or block ($$...$$).
@@ -188,6 +188,37 @@ def strip_code_fences(text):
     return text.strip()
 
 
+def fix_image_placeholders(markdown: str, bboxes: list, assets_name: str) -> str:
+    """Replace HTML comment image placeholders with proper markdown image syntax.
+
+    The model sometimes emits <!-- Image (x1,y1,x2,y2) --> or similar comment
+    syntax despite prompt instructions. We match them to known sub_labels in order,
+    skipping any sub_labels already correctly placed in the markdown.
+    """
+    html_comment_re = re.compile(r'<!--\s*(?:[Ii]mage|[Ff]igure)[^>]*-->')
+    sub_labels = [b.get("sub_label", f"figure_{i+1}") for i, b in enumerate(bboxes)]
+
+    # sub_labels already correctly emitted as ![...] — exclude from sequential pool
+    already_placed = set(re.findall(r'!\[([^\]]+)\]', markdown))
+    remaining = [sl for sl in sub_labels if sl not in already_placed]
+    idx = [0]
+
+    def replace(m):
+        comment = m.group()
+        # prefer an explicit sub_label name found inside the comment
+        for sl in sub_labels:
+            if sl in comment:
+                return f"![{sl}]({assets_name}/{sl}.png)"
+        # fall back to sequential assignment from unplaced figures only
+        if idx[0] < len(remaining):
+            sl = remaining[idx[0]]
+            idx[0] += 1
+            return f"![{sl}]({assets_name}/{sl}.png)"
+        return comment  # nothing left to assign — leave unchanged
+
+    return html_comment_re.sub(replace, markdown)
+
+
 def parse_bbox_response(text):
     """Extract the JSON array of bboxes from LLM response."""
     text = strip_code_fences(text)
@@ -240,7 +271,8 @@ async def process_page(
 
     if bboxes:
         detected_figures = "\n".join(
-            f"- {b.get('sub_label', '?')}: bbox_2d={b.get('bbox_2d', [])}" for b in bboxes
+            f"- ![{b.get('sub_label', '?')}]({assets_name}/{b.get('sub_label', '?')}.png)"
+            for b in bboxes
         )
     else:
         detected_figures = "(none detected on this page)"
@@ -257,6 +289,8 @@ async def process_page(
     log(f"  Page {page_num}: pass 2 (text extraction) starting...")
     markdown = await call_llm(client, model, b64, prompt_text, min_pixels, max_pixels, enable_thinking=False)
     markdown = strip_code_fences(markdown)
+    if bboxes:
+        markdown = fix_image_placeholders(markdown, bboxes, assets_name)
     log(f"  Page {page_num}: pass 2 done.")
 
     if bboxes:
@@ -353,7 +387,7 @@ def main():
     parser.add_argument(
         "--output",
         metavar="DIR",
-        help="Directory to write the markdown file and assets dir into.",
+        help="Directory to write the markdown file and assets dir into (default: same directory as the PDF).",
     )
     parser.add_argument(
         "--md",
@@ -453,10 +487,10 @@ def main():
 
     if not args.pdf_path:
         parser.error("pdf_path is required unless --test-config is used.")
-    if not args.output:
-        parser.error("--output is required.")
 
     pdf_path = Path(args.pdf_path).expanduser()
+    if not args.output:
+        args.output = str(pdf_path.parent)
     if not pdf_path.exists():
         print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
         sys.exit(1)

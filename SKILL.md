@@ -95,8 +95,8 @@ conda run -n zotero_mcp python scripts/locate_pdf.py --citekey ahmed2026 \
 
 ```
 {output}/
-  {citekey}.pdf      ← copied from Zotero local storage
-  {citekey}.bib      ← exported via Zotero API (accurate bibtex)
+  main_paper.pdf     ← copied from Zotero local storage
+  bibtex.bib         ← exported via Zotero API (accurate bibtex)
   assets/            ← empty, ready for pdf2md.py figure output
 ```
 
@@ -113,7 +113,7 @@ Final output: `{output}/{citekey}.md` (all pages concatenated with `---` separat
 ### Usage
 
 ```
-conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR [options]
+conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> [--output DIR] [options]
 ```
 
 ### Arguments
@@ -121,7 +121,7 @@ conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR [option
 | Argument | Required | Default | Description |
 |---|---|---|---|
 | `pdf_path` | yes* | — | Path to the PDF file. *Not needed with `--test-config`. |
-| `--output DIR` | yes* | — | Directory to write the markdown file and assets dir into. *Not needed with `--test-config`. |
+| `--output DIR` | no | same directory as the PDF | Directory to write the markdown file and assets dir into. |
 | `--md FILENAME` | no | `main_paper.md` | Markdown output filename. `.md` extension added automatically if omitted. |
 | `--assets DIRNAME` | no | `assets` | Assets subdirectory name inside `--output`. |
 | `--dpi INT` | no | `$LLM_OCR_DPI` (200) | PDF rendering resolution. Higher = better quality, slower. |
@@ -148,19 +148,20 @@ conda run -n zotero_mcp python scripts/pdf2md.py <pdf_path> --output DIR [option
 # Test OCR configuration
 conda run -n zotero_mcp python scripts/pdf2md.py --test-config
 
-# Convert full PDF (output: main_paper.md + assets/)
-conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf \
-    --output ~/OneDrive/papers/smith2023efficiency
+# Convert full PDF — output defaults to the PDF's own directory
+conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf
 
 # Custom output filename and assets dir
 conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf \
-    --output ~/OneDrive/papers/smith2023efficiency \
     --md smith2023efficiency --assets figs
 
 # Convert specific pages only
 conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf \
-    --output ~/OneDrive/papers/smith2023efficiency \
     --pages 1-5
+
+# Explicit output dir (e.g. writing elsewhere)
+conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf \
+    --output ~/converted/smith2023efficiency
 ```
 
 ### Typical workflow (LLM-assisted)
@@ -168,7 +169,7 @@ conda run -n zotero_mcp python scripts/pdf2md.py ~/OneDrive/papers/smith2023effi
 ```
 1. locate_pdf.py <query>                                → verify item (search mode)
 2. locate_pdf.py <query> --select N --output <dir>     → setup dir, copy PDF
-3. pdf2md.py <pdf_path> --output <dir> [--md <name>] [--assets <dir>] → generate markdown
+3. pdf2md.py <pdf_path> [--output <dir>] [--md <name>] [--assets <dir>] → generate markdown
 4. Verify figures (see below)
 ```
 

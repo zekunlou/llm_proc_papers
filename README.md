@@ -74,8 +74,8 @@ conda run -n zotero_mcp python scripts/locate_pdf.py --citekey smith2023efficien
 Creates:
 ```
 ~/OneDrive/papers/smith2023efficiency/
-  smith2023efficiency.pdf    ← copied from Zotero
-  smith2023efficiency.bib    ← exported via Zotero API
+  main_paper.pdf             ← copied from Zotero
+  bibtex.bib                 ← exported via Zotero API
   assets/                    ← empty, ready for figures
 ```
 
@@ -85,8 +85,7 @@ If the item has multiple PDFs, you'll see an error listing their names. Re-run w
 
 ```bash
 conda run -n zotero_mcp python scripts/pdf2md.py \
-    ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf \
-    --output ~/OneDrive/papers/smith2023efficiency
+    ~/OneDrive/papers/smith2023efficiency/smith2023efficiency.pdf
 ```
 
 Produces:

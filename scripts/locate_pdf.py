@@ -504,7 +504,7 @@ def main():
             bib_content = _zot_for_bib.item(item_key, format="bibtex")
             if not isinstance(bib_content, str):
                 bib_content = bibtexparser.dumps(bib_content)
-            (output_dir / f"{citekey_for_output}.bib").write_text(bib_content, encoding="utf-8")
+            (output_dir / "bibtex.bib").write_text(bib_content, encoding="utf-8")
         except Exception as e:
             print(f"Warning: BibTeX export failed: {e}", file=sys.stderr)
     else:
@@ -513,7 +513,7 @@ def main():
             file=sys.stderr,
         )
 
-    dest_pdf = output_dir / f"{citekey_for_output}.pdf"
+    dest_pdf = output_dir / "main_paper.pdf"
     shutil.copy2(src_path, dest_pdf)
 
     print(str(dest_pdf))
