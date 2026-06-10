@@ -191,30 +191,37 @@ def strip_code_fences(text):
 def fix_image_placeholders(markdown: str, bboxes: list, assets_name: str) -> str:
     """Replace HTML comment image placeholders with proper markdown image syntax.
 
-    The model sometimes emits <!-- Image (x1,y1,x2,y2) --> or similar comment
-    syntax despite prompt instructions. We match them to known sub_labels in order,
-    skipping any sub_labels already correctly placed in the markdown.
+    Handles two comment forms the model emits:
+      <!-- ![figure_1](assets/figure_1.png) -->  — correct syntax but comment-wrapped: unwrap
+      <!-- Image (x1,y1,x2,y2) -->              — coordinate form: map to known sub_label
     """
-    html_comment_re = re.compile(r'<!--\s*(?:[Ii]mage|[Ff]igure)[^>]*-->')
+    # Match comments whose content starts with ![, Image, or Figure
+    html_comment_re = re.compile(r'<!--\s*((?:!\[|[Ii]mage|[Ff]igure).*?)-->', re.DOTALL)
+    md_img_re = re.compile(r'(!\[[^\]]+\]\([^)]+\))')
+
     sub_labels = [b.get("sub_label", f"figure_{i+1}") for i, b in enumerate(bboxes)]
 
-    # sub_labels already correctly emitted as ![...] — exclude from sequential pool
+    # sub_labels already correctly emitted as bare ![...] — exclude from sequential pool
     already_placed = set(re.findall(r'!\[([^\]]+)\]', markdown))
     remaining = [sl for sl in sub_labels if sl not in already_placed]
     idx = [0]
 
     def replace(m):
-        comment = m.group()
-        # prefer an explicit sub_label name found inside the comment
+        inner = m.group(1).strip()
+        # comment wraps a valid markdown image — just unwrap it
+        img_match = md_img_re.match(inner)
+        if img_match:
+            return img_match.group(1)
+        # coordinate/name form — find sub_label by name in comment
         for sl in sub_labels:
-            if sl in comment:
+            if sl in inner:
                 return f"![{sl}]({assets_name}/{sl}.png)"
         # fall back to sequential assignment from unplaced figures only
         if idx[0] < len(remaining):
             sl = remaining[idx[0]]
             idx[0] += 1
             return f"![{sl}]({assets_name}/{sl}.png)"
-        return comment  # nothing left to assign — leave unchanged
+        return m.group(0)  # nothing left to assign — leave unchanged
 
     return html_comment_re.sub(replace, markdown)
 
