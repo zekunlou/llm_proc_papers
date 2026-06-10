@@ -10,30 +10,40 @@ This file describes the two CLI scripts in `scripts/` for use by LLM agents. All
 
 ### Two modes
 
-**Search/info mode** (no `--output`): searches across title, authors, and abstract. Prints a numbered list of matches, then full detail for the selected item. No files are created.
+**Search/info mode** (no `--output`): searches by citekey or free-text. Prints a numbered list of matches, then full detail for the selected item. No files are created.
 
-**Setup mode** (`--output DIR`): creates the paper directory, exports `.bib`, copies the PDF. Prints the copied PDF path to stdout.
+**Setup mode** (`--output DIR`): creates the paper directory, exports `.bib` (if API credentials available), copies the PDF. Prints the copied PDF path to stdout.
+
+### Search priority
+
+1. If `--citekey` is given, it is searched first.
+   - Not found → error with hint *"Remember to 'Pin BibTeX key' if you are using Better BibTeX"*; falls back to `query` if also provided.
+2. If only `query` is given, free-text search is used.
+3. At least one of `query` or `--citekey` must be provided.
 
 ### Usage
 
 ```
-conda run -n zotero_mcp python scripts/locate_pdf.py <query> [options]
+conda run -n zotero_mcp python scripts/locate_pdf.py [query] [options]
 ```
 
 ### Arguments
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
-| `query` | yes | — | Free-text search: title words, author name, abstract terms, or citekey |
+| `query` | no* | — | Free-text search: title words, author name, or abstract terms. At least one of `query` / `--citekey` required. |
+| `--citekey KEY` | no* | — | Search by BBT citekey (from Zotero Extra field). Takes priority over query. |
 | `--select N` | no | — | Non-interactively pick result N (1-indexed). Required for LLM use when multiple results exist. |
 | `--output DIR` | no | — | Per-paper directory to create. Omit for search/info mode only. |
-| `--citekey KEY` | no | from Extra field | Override the citekey used for output filenames. |
+| `--output-key KEY` | no | citekey from Extra field | Override the key used for output filenames. |
 | `--pdf-name FILENAME` | no | — | Select a specific PDF when the item has multiple attachments. |
 | `--limit N` | no | `20` | Max number of search results (default: 20). |
+| `--backend` | no | `sqlite` | `sqlite` (fast, local, no API needed) or `pyzotero` (API). |
 | `--zotero-data-dir DIR` | no | `$ZOTERO_DATA_DIR` | Local Zotero data directory. |
-| `--library-id ID` | no | `$ZOTERO_LIBRARY_ID` | Zotero library ID. |
+| `--zotero-db PATH` | no | `<data-dir>/zotero.sqlite` | Path to zotero.sqlite. |
+| `--library-id ID` | no | `$ZOTERO_LIBRARY_ID` | Zotero library ID. Required for pyzotero backend and BibTeX export. |
 | `--library-type TYPE` | no | `$ZOTERO_LIBRARY_TYPE` | `user` or `group`. |
-| `--api-key KEY` | no | `$ZOTERO_API_KEY` | Zotero API key. |
+| `--api-key KEY` | no | `$ZOTERO_API_KEY` | Zotero API key. Required for pyzotero backend and BibTeX export. |
 
 ### Stdout / exit codes
 
@@ -42,10 +52,14 @@ conda run -n zotero_mcp python scripts/locate_pdf.py <query> [options]
 - **Multiple results, interactive** (human): prints list and prompts for selection.
 - **Error**: prints error to stderr. Exit 1.
 
-### LLM workflow (two steps)
+### LLM workflow
 
 ```bash
-# Step 1: search — get numbered list
+# Best: search by citekey (instant, no API call)
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey ahmedInverseDesign2026 \
+    --output ~/OneDrive/papers/ahmedInverseDesign2026
+
+# If citekey unknown — Step 1: search to get numbered list
 conda run -n zotero_mcp python scripts/locate_pdf.py "inverse design heterodeformations"
 # → exit code 2 if multiple results; list printed to stdout
 
@@ -58,16 +72,23 @@ conda run -n zotero_mcp python scripts/locate_pdf.py "inverse design heterodefor
 ### Examples
 
 ```bash
-# Search only (human interactive)
+# Citekey search (default sqlite backend, fastest)
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey rossi2023ml
+
+# Free-text search only
 conda run -n zotero_mcp python scripts/locate_pdf.py "ahmed heterodeformations"
 
-# One-shot if only one result
-conda run -n zotero_mcp python scripts/locate_pdf.py "ahmed heterodeformations 2026" \
-    --output ~/OneDrive/papers/ahmed2026
+# Citekey with query fallback (if citekey not yet pinned in BBT)
+conda run -n zotero_mcp python scripts/locate_pdf.py "ahmed heterodeformations" \
+    --citekey ahmedInverseDesign2026
 
 # Multiple PDFs — first search to see filenames, then:
-conda run -n zotero_mcp python scripts/locate_pdf.py "ahmed heterodeformations" \
-    --select 1 --output ~/OneDrive/papers/ahmed2026 --pdf-name main.pdf
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey ahmed2026 \
+    --output ~/OneDrive/papers/ahmed2026 --pdf-name main.pdf
+
+# Override output filename key
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey ahmed2026 \
+    --output ~/OneDrive/papers/ahmed2026 --output-key ahmed2026_custom
 ```
 
 ### What gets created in setup mode

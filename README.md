@@ -55,7 +55,11 @@ Add the paper in Zotero and ensure Better BibTeX assigns a citekey (visible in t
 ### Step 2 — Verify item
 
 ```bash
-conda run -n zotero_mcp python scripts/locate_pdf.py smith2023efficiency
+# By citekey (fastest — searches local SQLite, no network)
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey smith2023efficiency
+
+# Or by free-text if citekey is unknown
+conda run -n zotero_mcp python scripts/locate_pdf.py "Smith 2023 efficiency"
 ```
 
 Prints title, authors, year, abstract, and available PDF filenames. Confirm this is the right paper before proceeding.
@@ -63,7 +67,7 @@ Prints title, authors, year, abstract, and available PDF filenames. Confirm this
 ### Step 3 — Set up paper directory
 
 ```bash
-conda run -n zotero_mcp python scripts/locate_pdf.py smith2023efficiency \
+conda run -n zotero_mcp python scripts/locate_pdf.py --citekey smith2023efficiency \
     --output ~/OneDrive/papers/smith2023efficiency
 ```
 

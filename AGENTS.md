@@ -15,7 +15,7 @@ This project is now at stage 4. Stages 1–3 are complete.
 
 Implemented two scripts in `./scripts/`:
 
-- `locate_pdf.py`: search Zotero by free-text query (title, author, abstract via `qmode=everything`), interactively or non-interactively select a result, create the paper directory, export `.bib` via pyzotero, and copy the PDF from local Zotero storage.
+- `locate_pdf.py`: search Zotero by citekey or free-text query using a local SQLite backend (default, fast, no API needed) or the pyzotero API. Citekey search (`--citekey KEY`) takes priority over free-text; if citekey is not found, falls back to query with a Better BibTeX "Pin BibTeX key" hint. Interactively or non-interactively select a result, create the paper directory, export `.bib` (requires API credentials), and copy the PDF from local Zotero storage. Output filename key is the detected citekey by default; override with `--output-key`.
 - `pdf2md.py`: convert a PDF to markdown using a two-pass LLM pipeline per page — pass 1 extracts single-column markdown with escaped citations (`\[x\]`) and figure placeholders; pass 2 detects figures as bounding boxes (0–999 normalized coords), crops them with Pillow, and saves to an assets directory. Supports `--md`, `--assets`, `--pages`, `--verbose`, `--test-config`.
 
 LLM backend: Qwen3.6-35b-a3b via OpenAI-compatible endpoint (`https://saia.gwdg.de/v1`). Image tokens configured via `LLM_OCR_MIN_TOKENS`/`LLM_OCR_MAX_TOKENS` in `.env` (defaults: 10000/50000).
