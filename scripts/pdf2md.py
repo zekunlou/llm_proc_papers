@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert an academic PDF to markdown with extracted figures.
+r"""Convert an academic PDF to markdown with extracted figures.
 
 Two-pass LLM processing per page (run sequentially, bbox first):
   Pass 1: detect figures as bounding boxes (0-999 normalized coords), crop and save
@@ -35,6 +35,17 @@ SUBFIGURE_RULES = """\
 Subfigures sharing one caption (e.g., labelled (a), (b) within a single "Fig. N" caption) belong to ONE figure regardless of their layout — side-by-side, stacked, or split across columns. Always assign sub_label to match the figure number used in its caption, never per-panel. If you cannot determine whether two crops share a caption, prefer merging them.\
 """
 
+FIGURE_NAMING_RULES = """\
+Derive sub_label from the figure's caption label exactly as printed — do not strip prefixes:
+- "Figure 1" / "Fig. 1" → figure_1
+- "Figure S1" / "Fig. S1" → figure_s1
+- "Supplementary Figure 1" / "Supplementary Fig. 1" → figure_s1
+- "Extended Data Figure 1" / "ED Fig. 1" → extended_figure_1
+- Unnumbered figure → descriptive name (e.g. band_structure, phase_diagram)
+
+If a figure caption reads "Figure 1" but the page belongs to a section whose header says "Supplementary Information", "Supporting Information", "Supplementary Material", or similar, use supp_figure_1 (not figure_1) to avoid collision with the main paper's Figure 1.\
+"""
+
 LATEX_MARKDOWN_RULES = """\
 - LaTeX/Markdown compatibility:
   - Use \\boldsymbol{...} for bold vectors/tensors. Never use \\bm{...}.
@@ -50,11 +61,13 @@ PROMPT_TEXT_TEMPLATE = """\
 Convert this academic paper page to markdown. Follow these rules exactly:
 - Output single column only. If the page has two columns, process the left column first, then the right column, maintaining reading order.
 - Escape all citation brackets with a backslash: write \\[1\\] instead of [1], \\[Smith, 2023\\] instead of [Smith, 2023].
-- For each figure, insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png) — for example ![figure_1]({assets}/figure_1.png). Place the figure caption immediately after the placeholder. If it is a numbered figure, use sub_label to indicate the figure number only (e.g. figure_1, figure_2). If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram). Never represent a figure as an HTML comment such as `<!-- Image (x1, y1, x2, y2) -->` or any other bbox/coordinate notation — the only acceptable figure placeholder is the ![sub_label](...) markdown image syntax above. Use the same definition of "figure" as below:
+- For each figure, insert a placeholder on its own line using the format ![sub_label]({assets}/sub_label.png) — for example ![figure_1]({assets}/figure_1.png). Place the figure caption immediately after the placeholder. Never represent a figure as an HTML comment such as `<!-- Image (x1, y1, x2, y2) -->` or any other bbox/coordinate notation — the only acceptable figure placeholder is the ![sub_label](...) markdown image syntax above. Use the same definition of "figure" as below:
 
 {figure_rules}
 
 {subfigure_rules}
+
+{figure_naming_rules}
 
 A separate detection pass already located the figures on this page. For each figure below, copy the placeholder line VERBATIM into your output at the location where the figure appears — do not alter it, do not use HTML comments, do not use coordinates:
 {detected_figures}
@@ -83,9 +96,10 @@ Rules:
 - Coordinates are on a 0–999 scale relative to the image dimensions.
 - Each box must be tight around the figure content only (not surrounding whitespace or captions).
 - A valid figure box must have both width and height greater than 10% of the page dimension (i.e. at least 100 in the 0–999 scale on each axis). Don't be too tight, it is fine to include some surrounding whitespace, but it is important to include the entire figure content and the sublabels like (a) (b) around the figure.
-- label must be "figure". If it is a numbered figure, please only use sub_label to indicate the figure number (e.g. figure_1, figure_2) without any additional text. If the figure is not numbered, use a descriptive sub_label (e.g. band_structure, phase_diagram).
-- sub_label: lowercase, underscores, descriptive (e.g. figure_1, band_structure, phase_diagram_a). Use the same sub_label you would assign in a text extraction pass for this page.
+- label must be "figure".
+- sub_label: lowercase, underscores only. Use the same sub_label you would assign in a text extraction pass for this page.
 - {subfigure_rules}
+- {figure_naming_rules}
 - If no scientific figures are present on this page, output exactly: []\
 """
 
@@ -266,7 +280,11 @@ async def process_page(
     informed by the detected figures (so sub_labels stay consistent). Returns markdown string."""
     b64 = image_to_base64(img)
     img_w, img_h = img.size
-    prompt_bbox = PROMPT_BBOX.format(figure_rules=FIGURE_RULES, subfigure_rules=SUBFIGURE_RULES)
+    prompt_bbox = PROMPT_BBOX.format(
+        figure_rules=FIGURE_RULES,
+        subfigure_rules=SUBFIGURE_RULES,
+        figure_naming_rules=FIGURE_NAMING_RULES,
+    )
 
     log(f"  Page {page_num}: pass 1 (figure detection) starting...")
     bbox_text = await call_llm(client, model, b64, prompt_bbox, min_pixels, max_pixels, enable_thinking=True)
@@ -288,6 +306,7 @@ async def process_page(
         assets=assets_name,
         figure_rules=FIGURE_RULES,
         subfigure_rules=SUBFIGURE_RULES,
+        figure_naming_rules=FIGURE_NAMING_RULES,
         detected_figures=detected_figures,
         latex_rules=LATEX_MARKDOWN_RULES,
         transcription_rules=TRANSCRIPTION_RULES,
