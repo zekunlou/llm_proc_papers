@@ -152,9 +152,10 @@ def thinking_extra_body(model, enable_thinking):
 
 
 async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, max_pixels, enable_thinking=True):
-    """Send one image+prompt to the LLM and return the response text. Retries on 429."""
-    from openai import RateLimitError
+    """Send one image+prompt to the LLM and return the response text. Retries on 429 and 5xx."""
+    from openai import RateLimitError, InternalServerError
     retry_wait = 60
+    server_error_wait = 10
     while True:
         try:
             response = await client.chat.completions.create(
@@ -193,6 +194,10 @@ async def call_llm(client: AsyncOpenAI, model, b64_image, prompt, min_pixels, ma
                 f"reset in {reset_sec if reset_sec is not None else '?'}s — waiting {wait}s before retry..."
             )
             await asyncio.sleep(wait)
+        except InternalServerError as e:
+            log(f"Server error (500) — waiting {server_error_wait}s before retry... ({e})")
+            await asyncio.sleep(server_error_wait)
+            server_error_wait = min(server_error_wait * 2, 120)
 
 
 def strip_code_fences(text):
